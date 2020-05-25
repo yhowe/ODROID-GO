@@ -22,6 +22,8 @@ void ODROID_GO::begin(unsigned long baud) {
     pinMode(BUTTON_JOY_Y, INPUT_PULLDOWN);
     pinMode(BUTTON_JOY_X, INPUT_PULLDOWN);
 
+    SD.begin(22);
+
     // ODROID_GO LCD INIT
     lcd.begin();
     lcd.setRotation(1);
