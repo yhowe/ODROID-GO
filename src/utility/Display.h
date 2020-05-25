@@ -52,9 +52,9 @@
 // #define SPI_FREQUENCY   1000000
 // #define SPI_FREQUENCY   5000000
 // #define SPI_FREQUENCY  10000000
-//#define SPI_FREQUENCY  20000000
+#define SPI_FREQUENCY  20000000
 //#define SPI_FREQUENCY  27000000 // Actually sets it to 26.67MHz = 80/3
-#define SPI_FREQUENCY  40000000 // Maximum to use SPIFFS
+//#define SPI_FREQUENCY  40000000 // Maximum to use SPIFFS
 //#define SPI_FREQUENCY  80000000
 
 // Comment out the following #define if "SPI Transactions" do not need to be
@@ -468,7 +468,11 @@ public:
 
   void  init(void), begin(void); // Same - begin included for backwards compatibility
 
+  void initShadow(void);  // clear shadowbuffer
   bool dispActive(void);  // is display thread active
+  void lock_display_thread(void);  // stop updates
+  void unlock_display_thread(void);  // allow updates
+  void setInterlaced(bool value);
   void  drawPixel(uint32_t x, uint32_t y, uint32_t color);
 
   void  drawChar(int32_t x, int32_t y, unsigned char c, uint32_t color, uint32_t bg, uint8_t font),

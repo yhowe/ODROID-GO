@@ -17,7 +17,12 @@
   Bodmer: Added RPi 16 bit display support
  ****************************************************/
 
+extern "C" {
+#include <system.h>
+}
+#include <Arduino.h>
 #include "Display.h"
+#include <sys/time.h>
 
 typedef struct {
   int16_t x;
@@ -35,11 +40,19 @@ typedef struct {
   uint16_t outHeight;
   bool centreme;
   int extrad;
+  bool interlaced;
 } jpg_file_decoder_t;
 
+#define NUMFRAMES 3
+uint8_t *framedata[NUMFRAMES * 2];
+static int framepos = 0, framenow = 0;
+bool _interlaced = false;
 static void Task1code(void * parameter);
-static jpg_file_decoder_t myjpeg;
+static jpg_file_decoder_t myjpeg[NUMFRAMES], thjpeg[NUMFRAMES];
 static int startthread = 0;
+static int _flip = 0;
+static uint8_t *shadow;
+
 // Fast SPI block write prototype
 void spiWriteBlock(uint16_t color, uint32_t repeat);
 
@@ -47,12 +60,75 @@ void spiWriteBlock(uint16_t color, uint32_t repeat);
 // establish settings and protect from interference from other
 // libraries.  Otherwise, they simply do nothing.
 
-bool ILI9341::dispActive(void) {
-	if (startthread)
-		return true;
+SemaphoreHandle_t display_mutex, thread_mutex;
+void lock_display(void);
+void unlock_display(void);
 
-	return false;
+void ILI9341::lock_display_thread(void) {
+    if (!thread_mutex)
+    {
+        thread_mutex = xSemaphoreCreateMutex();
+        if (!thread_mutex) abort();
+    }
+
+    if (xSemaphoreTake(thread_mutex, 1000 / portTICK_RATE_MS) != pdTRUE)
+    {
+        abort();
+    }
 }
+
+void lock_display(void) {
+    if (!display_mutex)
+    {
+        display_mutex = xSemaphoreCreateMutex();
+        if (!display_mutex) abort();
+    }
+
+    if (xSemaphoreTake(display_mutex, 1000 / portTICK_RATE_MS) != pdTRUE)
+    {
+        abort();
+    }
+}
+
+void ILI9341::unlock_display_thread(void) {
+    if (!thread_mutex) abort();
+
+    xSemaphoreGive(thread_mutex);
+}
+
+void unlock_display(void) {
+    if (!display_mutex) abort();
+
+    xSemaphoreGive(display_mutex);
+}
+
+bool ILI9341::dispActive(void) {
+	bool result = false;
+	lock_display();
+	if (startthread > 0)
+		result = true;
+	unlock_display();
+
+	return result;
+}
+
+void ILI9341::setInterlaced(bool value) {
+	_interlaced = value;
+}
+
+static long long int next_time = 0;
+static int frameCount = 0;
+static int frameTime = 0;
+
+void ILI9341::initShadow(void) {
+	this->lock_display_thread();
+	next_time = 0;
+	frameCount = 0;
+	frameTime = 0;
+	memset(shadow, 0, 240 * 320 * 3);
+	this->unlock_display_thread();
+}
+
 
 inline void ILI9341::spi_begin(void) {
 #ifdef SPI_HAS_TRANSACTION
@@ -178,15 +254,27 @@ ILI9341::ILI9341(int16_t w, int16_t h) {
 ***************************************************************************************/
 void ILI9341::begin(void) {
     init();
+      startthread = 0;
 
     xTaskCreatePinnedToCore(
 	  Task1code, /* Function to implement the task */
 	"Task1", /* Name of the task */
       10000,  /* Stack size in words */
-    &myjpeg,  /* Task input parameter */
-	  20,  /* Priority of the task */
+    this,  /* Task input parameter */
+	  0,  /* Priority of the task */
 		&Task1,  /* Task handle. */
       xPortGetCoreID() == 1 ? 0 : 1); /* Core where the task should run */
+      shadow = (uint8_t *)heap_caps_malloc(320 * 240 * 3, MALLOC_CAP_SPIRAM |
+	  MALLOC_CAP_8BIT);
+      if (!shadow)
+	  abort();
+      for (int i = 0; i < NUMFRAMES * 2; i++) {
+      	  framedata[i] = (uint8_t *)heap_caps_malloc(100 * 1024 + 5,
+	      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+      	  if (!framedata[i])
+	      abort();
+      }
+      initShadow();
 }
 
 /***************************************************************************************
@@ -2804,35 +2892,44 @@ static uint32_t jpgWrite(JDEC *decoder, void *bitmap, JRECT *rect) {
   uint16_t oL = 0, oR = 0;
   uint8_t *data = (uint8_t *)bitmap;
 
-  if (rect->right < jpeg->offX) {
+//fprintf(stderr, "width %d height %d top %d bottom %d left %d right %d\n",jpeg->outWidth, jpeg->outHeight, rect->top, rect->bottom, rect->left, rect->right);
+
+  if (rect->right > jpeg->outWidth + jpeg->offX) {
     return 1;
   }
-  if (rect->left >= (jpeg->offX + jpeg->outWidth)) {
+  #if 0
+  if (rect->left < jpeg->offX) {
+    fprintf(stderr, "2\n");
     return 1;
   }
-  if (rect->bottom < jpeg->offY) {
+  #endif
+  if (rect->bottom > jpeg->outHeight + jpeg->offY) {
     return 1;
   }
-  if (rect->top >= (jpeg->offY + jpeg->outHeight)) {
-    return 1;
-  }
+  #if 0
   if (rect->top < jpeg->offY) {
-    uint16_t linesToSkip = jpeg->offY - rect->top;
+    return 1;
+  }
+  #endif
+  #if 0
+  if (jpeg->offY) {
+    uint16_t linesToSkip = jpeg->offY;
     data += linesToSkip * w * 3;
     h -= linesToSkip;
     y += linesToSkip;
   }
-  if (rect->bottom >= (jpeg->offY + jpeg->outHeight)) {
+  if (rect->bottom > (jpeg->offY + jpeg->outHeight)) {
     uint16_t linesToSkip = (rect->bottom + 1) - (jpeg->offY + jpeg->outHeight);
     h -= linesToSkip;
   }
   if (rect->left < jpeg->offX) {
     oL = jpeg->offX - rect->left;
   }
-  if (rect->right >= (jpeg->offX + jpeg->outWidth)) {
+  if (rect->right > (jpeg->offX + jpeg->outWidth)) {
     oR = (rect->right + 1) - (jpeg->offX + jpeg->outWidth);
   }
 
+  #endif
   uint16_t pixBuf[32];
   uint8_t pixIndex = 0;
   uint16_t line;
@@ -2840,19 +2937,36 @@ static uint32_t jpgWrite(JDEC *decoder, void *bitmap, JRECT *rect) {
   jpeg->tft->startWrite();
   // jpeg->tft->setAddrWindow(x - jpeg->offX + jpeg->x + oL, y - jpeg->offY +
   // jpeg->y, w - (oL + oR), h);
-  jpeg->tft->setAddrWindow(x - jpeg->offX + jpeg->x + oL,
-                           y - jpeg->offY + jpeg->y,
-                           x - jpeg->offX + jpeg->x + oL + w - (oL + oR) - 1,
-                           y - jpeg->offY + jpeg->y + h - 1);
-
+  int j = -1;
   while (h--) {
+    j++;
     data += 3 * oL;
     line = w - (oL + oR);
+    if (jpeg->interlaced && (y + h + _flip) % 2) {
+	data += 3 * line;
+	data += 3 * oR;
+	continue;
+    }
+  jpeg->tft->setAddrWindow(x - jpeg->offX + jpeg->x + oL,
+                           y - jpeg->offY + jpeg->y + j,
+                           x - jpeg->offX + jpeg->x + oL + w - (oL + oR),
+                           y - jpeg->offY + jpeg->y + j + 1);
+
+    int shadowoffs = (((y + j) * 320) + x) * 3;
+
+    if (memcmp((uint8_t *)(data), (uint8_t *)(shadow + shadowoffs),
+	line * 3) == 0) {
+		data += 3 * line;
+		data += 3 * oR;
+		continue;
+    }
+
+    memcpy(shadow + shadowoffs, data, line * 3);
     while (line--) {
       pixBuf[pixIndex++] = jpgColor(data);
       data += 3;
-      if (pixIndex == 32) {
-        jpeg->tft->writePixels(pixBuf, 32);
+      if (pixIndex == 32 || line == 0) {
+        jpeg->tft->writePixels(pixBuf, pixIndex);
         pixIndex = 0;
       }
     }
@@ -2862,13 +2976,13 @@ static uint32_t jpgWrite(JDEC *decoder, void *bitmap, JRECT *rect) {
     jpeg->tft->writePixels(pixBuf, pixIndex);
   }
   jpeg->tft->endWrite();
+  //fprintf(stderr, "START %d\n", start);
   return 1;
 }
 
 static bool jpgDecode(jpg_file_decoder_t *jpeg,
                       uint32_t (*reader)(JDEC *, uint8_t *, uint32_t)) {
   static uint8_t work[3100];
-  static uint8_t newwork[3100];
   JDEC decoder;
 
   JRESULT jres = jd_prepare(&decoder, reader, work, 3100, jpeg);
@@ -2911,7 +3025,8 @@ static bool jpgDecode(jpg_file_decoder_t *jpeg,
 		jpeg->x = 0;
 	//fprintf(stderr, "M %d %d J %d %d\n", jpgWidth, jpgHeight, jpeg->x, jpeg->y);
   }
-  if (jpeg->offX >= jpgWidth || jpeg->offY >= jpgHeight) {
+
+  if (jpeg->offX > jpgWidth || jpeg->offY > jpgHeight) {
     log_e("Offset Outside of JPEG size");
     return false;
   }
@@ -2920,16 +3035,35 @@ static bool jpgDecode(jpg_file_decoder_t *jpeg,
   size_t jpgMaxHeight = jpgHeight - jpeg->offY;
 
   jpeg->outWidth =
+      (jpgWidth > jpeg->maxWidth) ? jpeg->maxWidth : jpgWidth;
+  jpeg->outHeight =
+      (jpgHeight > jpeg->maxHeight) ? jpeg->maxHeight : jpgHeight;
+
+  if (jpgMaxWidth < jpeg->outWidth) {
+    log_e("Maximum X Offset");
+    jpeg->offX = jpgWidth - jpeg->outWidth;
+  }
+  if (jpgMaxHeight < jpeg->outHeight) {
+    log_e("Maximum Y Offset");
+    jpeg->offY = jpgHeight - jpeg->outHeight;
+  }
+
+  jpgMaxWidth = jpgWidth - jpeg->offX;
+  jpgMaxHeight = jpgHeight - jpeg->offY;
+
+  jpeg->outWidth =
       (jpgMaxWidth > jpeg->maxWidth) ? jpeg->maxWidth : jpgMaxWidth;
   jpeg->outHeight =
       (jpgMaxHeight > jpeg->maxHeight) ? jpeg->maxHeight : jpgMaxHeight;
 
   jres = jd_decomp(&decoder, jpgWrite, (uint8_t)jpeg->scale);
+  //    jpeg->interlaced);
   if (jres != JDR_OK) {
   	log_e("jd_decomp failed! %s", jd_errors[jres]);
     	return false;
   }
 
+	//_flip ^= 1;
   jpeg->extrad = decoder.dctr + 2;
   return true;
 }
@@ -2942,7 +3076,6 @@ int ILI9341::drawJpgThreaded(const uint8_t *jpg_data, size_t jpg_len, uint16_t x
     return - 1;
   }
 
-  static int frame_count = 0;
   if (!maxWidth) {
     maxWidth = width() - x;
   }
@@ -2950,30 +3083,31 @@ int ILI9341::drawJpgThreaded(const uint8_t *jpg_data, size_t jpg_len, uint16_t x
     maxHeight = height() - y;
   }
 
-  frame_count++;
-  #if 0
-  if (frame_count % 3 == 0) {
-  	while (startthread > 0)
-		vTaskDelay(1);
-  } else
-  #endif
-  if (startthread > 0)
+  if (jpg_len > 100 * 1024 || startthread == NUMFRAMES)
 	return 0;
-  myjpeg.src = jpg_data;
-  myjpeg.len = jpg_len;
-  myjpeg.index = 0;
-  myjpeg.x = x;
-  myjpeg.y = y;
-  myjpeg.maxWidth = maxWidth;
-  myjpeg.maxHeight = maxHeight;
-  myjpeg.offX = offX;
-  myjpeg.offY = offY;
-  myjpeg.scale = scale;
-  myjpeg.tft = this;
-  myjpeg.centreme = centre;
-
+  lock_display();
+  int i = framepos++ % NUMFRAMES;
+  memcpy(framedata[i], jpg_data, jpg_len);
+  //fprintf(stderr, "JPGL %d\n", jpg_len);
+  myjpeg[i].src = framedata[i];
+  myjpeg[i].len = jpg_len;
+  myjpeg[i].index = 0;
+  myjpeg[i].x = x;
+  myjpeg[i].y = y;
+  myjpeg[i].maxWidth = maxWidth;
+  myjpeg[i].maxHeight = maxHeight;
+  myjpeg[i].offX = offX;
+  myjpeg[i].offY = offY;
+  myjpeg[i].scale = scale;
+  myjpeg[i].tft = this;
+  myjpeg[i].centreme = centre;
+  myjpeg[i].interlaced = _interlaced;
+  noInterrupts();
   startthread++;
-  return myjpeg.extrad;
+  interrupts();
+  unlock_display();
+
+  return myjpeg[i].extrad;
 }
 
 int ILI9341::drawJpg(const uint8_t *jpg_data, size_t jpg_len, uint16_t x,
@@ -3332,15 +3466,41 @@ void ILI9341::writeHzkGbk(const uint8_t *c) {
 }
 
 static void Task1code(void * parameter) {
-	jpg_file_decoder_t newjpg;
+	long long int lasttime;
+	struct timeval timenow;
+	ILI9341 *mylcd = (ILI9341 *)parameter;
 	for (;;) {
-	while (startthread == 0)
-		vTaskDelay(1);
-	jpg_file_decoder_t *datajpeg = (jpg_file_decoder_t *)parameter;
-	memcpy(&newjpg, datajpeg, sizeof(jpg_file_decoder_t));
+	    gettimeofday(&timenow, NULL);
+	    lasttime = timenow.tv_sec * 1000000 + timenow.tv_usec;
+	    if (next_time == 0)
+		next_time = lasttime + 1000000;
 
-  	jpgDecode(&newjpg, jpgRead);
-	startthread--;
+	    frameCount++;
+	    if (lasttime > next_time) {
+		next_time = lasttime + 1000000;
+		frameTime++;
+	    	fprintf(stderr, "FPS: %d\n", frameCount / frameTime);
+	    }
+	    while (startthread == 0) {
+		    taskusleep(1000);
+	    }
+	    lock_display();
+	    int num = framenow++ % NUMFRAMES;
+	    memcpy(&thjpeg[num], &myjpeg[num], sizeof(myjpeg[0]));
+	    memcpy(framedata[NUMFRAMES + num], myjpeg[num].src,
+		myjpeg[num].len);
+	    thjpeg[num].src = framedata[NUMFRAMES + num];
+	    unlock_display();
+
+	    mylcd->lock_display_thread();
+	    jpg_file_decoder_t *datajpeg = &thjpeg[num];
+
+  	    jpgDecode(datajpeg, jpgRead);
+	    lock_display();
+            startthread--;
+	    unlock_display();
+	    mylcd->unlock_display_thread();
+	    taskusleep(1000);
 	}
 }
 
