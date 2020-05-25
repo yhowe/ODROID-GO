@@ -18,7 +18,7 @@
  ****************************************************/
 
 extern "C" {
-#include <system.h>
+#include "system.h"
 }
 #include <Arduino.h>
 #include "Display.h"
