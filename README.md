@@ -1,4 +1,14 @@
 # ODROID-GO
+
+Improvements made: Volume controlled square wave tone generator.
+		   Speaker is silent if not playing audio.
+		   New playMusic function that takes a length argument so it
+		   is possible to play samples with silence in them.
+		   Threaded jpg display with scanlines and shadow framebuffer
+		   for faster performance.
+		   Locking mechanisms to prevent display update during SD card
+		   read.
+
 <img align="right" width="300" height="291" src="https://www.hardkernel.com/main/_Files/prdt/2018/201806/201806120632198417.jpg">
 <br />
 <br />
