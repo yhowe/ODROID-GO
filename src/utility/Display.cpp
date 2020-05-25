@@ -19,12 +19,40 @@
 
 #include "Display.h"
 
+typedef struct {
+  int16_t x;
+  int16_t y;
+  uint16_t maxWidth;
+  uint16_t maxHeight;
+  uint16_t offX;
+  uint16_t offY;
+  jpeg_div_t scale;
+  const void *src;
+  size_t len;
+  size_t index;
+  ILI9341 *tft;
+  uint16_t outWidth;
+  uint16_t outHeight;
+  bool centreme;
+  int extrad;
+} jpg_file_decoder_t;
+
+static void Task1code(void * parameter);
+static jpg_file_decoder_t myjpeg;
+static int startthread = 0;
 // Fast SPI block write prototype
 void spiWriteBlock(uint16_t color, uint32_t repeat);
 
 // If the SPI library has transaction support, these functions
 // establish settings and protect from interference from other
 // libraries.  Otherwise, they simply do nothing.
+
+bool ILI9341::dispActive(void) {
+	if (startthread)
+		return true;
+
+	return false;
+}
 
 inline void ILI9341::spi_begin(void) {
 #ifdef SPI_HAS_TRANSACTION
@@ -148,7 +176,18 @@ ILI9341::ILI9341(int16_t w, int16_t h) {
 ** Function name:           begin
 ** Description:             Included for backwards compatibility
 ***************************************************************************************/
-void ILI9341::begin(void) { init(); }
+void ILI9341::begin(void) {
+    init();
+
+    xTaskCreatePinnedToCore(
+	  Task1code, /* Function to implement the task */
+	"Task1", /* Name of the task */
+      10000,  /* Stack size in words */
+    &myjpeg,  /* Task input parameter */
+	  20,  /* Priority of the task */
+		&Task1,  /* Task handle. */
+      xPortGetCoreID() == 1 ? 0 : 1); /* Core where the task should run */
+}
 
 /***************************************************************************************
 ** Function name:           init
@@ -2735,25 +2774,10 @@ const char *jd_errors[] = {"Succeeded",
                            "Not supported JPEG standard"};
 #endif
 
-typedef struct {
-  uint16_t x;
-  uint16_t y;
-  uint16_t maxWidth;
-  uint16_t maxHeight;
-  uint16_t offX;
-  uint16_t offY;
-  jpeg_div_t scale;
-  const void *src;
-  size_t len;
-  size_t index;
-  ILI9341 *tft;
-  uint16_t outWidth;
-  uint16_t outHeight;
-} jpg_file_decoder_t;
-
 static uint32_t jpgReadFile(JDEC *decoder, uint8_t *buf, uint32_t len) {
   jpg_file_decoder_t *jpeg = (jpg_file_decoder_t *)decoder->device;
   File *file = (File *)jpeg->src;
+  //fprintf(stderr, "POSIITION: %x\n", file->position());
   if (buf) {
     return file->read(buf, len);
   } else {
@@ -2844,17 +2868,49 @@ static uint32_t jpgWrite(JDEC *decoder, void *bitmap, JRECT *rect) {
 static bool jpgDecode(jpg_file_decoder_t *jpeg,
                       uint32_t (*reader)(JDEC *, uint8_t *, uint32_t)) {
   static uint8_t work[3100];
+  static uint8_t newwork[3100];
   JDEC decoder;
 
   JRESULT jres = jd_prepare(&decoder, reader, work, 3100, jpeg);
+  //fprintf(stderr, "LEN %d\n", jpeg->len);
   if (jres != JDR_OK) {
     log_e("jd_prepare failed! %s", jd_errors[jres]);
     return false;
   }
+  
+	if (jpeg->scale == JPEG_DIV_FS) {
+	int tmpscale = decoder.height / 240; 
 
-  uint16_t jpgWidth = decoder.width / (1 << (uint8_t)(jpeg->scale));
-  uint16_t jpgHeight = decoder.height / (1 << (uint8_t)(jpeg->scale));
+	if (decoder.height % 240)
+		tmpscale++;
 
+//fprintf(stderr, "%d %d\n", decoder.height, tmpscale);
+	if (tmpscale >= 7)
+		jpeg->scale = JPEG_DIV_8;
+	else if (tmpscale >= 3)
+		jpeg->scale = JPEG_DIV_4;
+	else if (tmpscale >= 2)
+		jpeg->scale = JPEG_DIV_2;
+	else
+		jpeg->scale = JPEG_DIV_NONE;
+
+  }
+
+
+  int mydiv = (1 << (uint8_t)(jpeg->scale));
+	
+  uint16_t jpgWidth = decoder.width / mydiv;
+  uint16_t jpgHeight = decoder.height / mydiv;
+
+  if (jpeg->centreme) {
+	jpeg->x = (320 - jpgWidth) / 2;
+	jpeg->y = (240 - jpgHeight) / 2;
+	if (jpeg->y < 0)
+		jpeg->y = 0;
+	if (jpeg->x < 0)
+		jpeg->x = 0;
+	//fprintf(stderr, "M %d %d J %d %d\n", jpgWidth, jpgHeight, jpeg->x, jpeg->y);
+  }
   if (jpeg->offX >= jpgWidth || jpeg->offY >= jpgHeight) {
     log_e("Offset Outside of JPEG size");
     return false;
@@ -2870,19 +2926,62 @@ static bool jpgDecode(jpg_file_decoder_t *jpeg,
 
   jres = jd_decomp(&decoder, jpgWrite, (uint8_t)jpeg->scale);
   if (jres != JDR_OK) {
-    log_e("jd_decomp failed! %s", jd_errors[jres]);
-    return false;
+  	log_e("jd_decomp failed! %s", jd_errors[jres]);
+    	return false;
   }
 
+  jpeg->extrad = decoder.dctr + 2;
   return true;
 }
 
-void ILI9341::drawJpg(const uint8_t *jpg_data, size_t jpg_len, uint16_t x,
+int ILI9341::drawJpgThreaded(const uint8_t *jpg_data, size_t jpg_len, uint16_t x,
                       uint16_t y, uint16_t maxWidth, uint16_t maxHeight,
-                      uint16_t offX, uint16_t offY, jpeg_div_t scale) {
+                      uint16_t offX, uint16_t offY, jpeg_div_t scale, bool centre) {
   if ((x + maxWidth) > width() || (y + maxHeight) > height()) {
     log_e("Bad dimensions given");
-    return;
+    return - 1;
+  }
+
+  static int frame_count = 0;
+  if (!maxWidth) {
+    maxWidth = width() - x;
+  }
+  if (!maxHeight) {
+    maxHeight = height() - y;
+  }
+
+  frame_count++;
+  #if 0
+  if (frame_count % 3 == 0) {
+  	while (startthread > 0)
+		vTaskDelay(1);
+  } else
+  #endif
+  if (startthread > 0)
+	return 0;
+  myjpeg.src = jpg_data;
+  myjpeg.len = jpg_len;
+  myjpeg.index = 0;
+  myjpeg.x = x;
+  myjpeg.y = y;
+  myjpeg.maxWidth = maxWidth;
+  myjpeg.maxHeight = maxHeight;
+  myjpeg.offX = offX;
+  myjpeg.offY = offY;
+  myjpeg.scale = scale;
+  myjpeg.tft = this;
+  myjpeg.centreme = centre;
+
+  startthread++;
+  return myjpeg.extrad;
+}
+
+int ILI9341::drawJpg(const uint8_t *jpg_data, size_t jpg_len, uint16_t x,
+                      uint16_t y, uint16_t maxWidth, uint16_t maxHeight,
+                      uint16_t offX, uint16_t offY, jpeg_div_t scale, bool centre) {
+  if ((x + maxWidth) > width() || (y + maxHeight) > height()) {
+    log_e("Bad dimensions given");
+    return - 1;
   }
 
   jpg_file_decoder_t jpeg;
@@ -2905,23 +3004,21 @@ void ILI9341::drawJpg(const uint8_t *jpg_data, size_t jpg_len, uint16_t x,
   jpeg.offY = offY;
   jpeg.scale = scale;
   jpeg.tft = this;
+  jpeg.centreme = centre;
 
   jpgDecode(&jpeg, jpgRead);
+
+  return jpeg.extrad;
 }
 
-void ILI9341::drawJpgFile(fs::FS &fs, const char *path, uint16_t x, uint16_t y,
+int  ILI9341::drawJpgOpenFile(File *file, uint16_t x, uint16_t y,
                           uint16_t maxWidth, uint16_t maxHeight, uint16_t offX,
-                          uint16_t offY, jpeg_div_t scale) {
+                          uint16_t offY, jpeg_div_t scale, bool centre) {
   if ((x + maxWidth) > width() || (y + maxHeight) > height()) {
     log_e("Bad dimensions given");
-    return;
+    return - 1;
   }
 
-  File file = fs.open(path);
-  if (!file) {
-    log_e("Failed to open file for reading");
-    return;
-  }
 
   jpg_file_decoder_t jpeg;
 
@@ -2932,8 +3029,8 @@ void ILI9341::drawJpgFile(fs::FS &fs, const char *path, uint16_t x, uint16_t y,
     maxHeight = height() - y;
   }
 
-  jpeg.src = &file;
-  jpeg.len = file.size();
+  jpeg.src = file;
+  jpeg.len = file->size();
   jpeg.index = 0;
   jpeg.x = x;
   jpeg.y = y;
@@ -2943,12 +3040,28 @@ void ILI9341::drawJpgFile(fs::FS &fs, const char *path, uint16_t x, uint16_t y,
   jpeg.offY = offY;
   jpeg.scale = scale;
   jpeg.tft = this;
+  jpeg.centreme = centre;
 
   jpgDecode(&jpeg, jpgReadFile);
 
-  file.close();
+  return jpeg.extrad;
 }
 
+int  ILI9341::drawJpgFile(fs::FS &fs, const char *path, uint16_t x, uint16_t y,
+                          uint16_t maxWidth, uint16_t maxHeight, uint16_t offX,
+                          uint16_t offY, jpeg_div_t scale, bool centre) {
+  File file = fs.open(path);
+  if (!file) {
+    log_e("Failed to open file for reading");
+    return - 1;
+  }
+	int result;
+	result = drawJpgOpenFile(&file, x, y, maxWidth, maxHeight, offX, offY,
+	    scale, centre);
+  file.close();
+
+  return result;
+}
 
 #include "qrcode.h"
 void ILI9341::qrcode(const char *string, uint16_t x, uint16_t y, uint8_t width, uint8_t version) {
@@ -3216,6 +3329,19 @@ void ILI9341::writeHzkGbk(const uint8_t *c) {
     cursor_x = 0;
     cursor_y += gbkCharHeight;
   }
+}
+
+static void Task1code(void * parameter) {
+	jpg_file_decoder_t newjpg;
+	for (;;) {
+	while (startthread == 0)
+		vTaskDelay(1);
+	jpg_file_decoder_t *datajpeg = (jpg_file_decoder_t *)parameter;
+	memcpy(&newjpg, datajpeg, sizeof(jpg_file_decoder_t));
+
+  	jpgDecode(&newjpg, jpgRead);
+	startthread--;
+	}
 }
 
 /***************************************************

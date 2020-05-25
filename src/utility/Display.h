@@ -52,10 +52,10 @@
 // #define SPI_FREQUENCY   1000000
 // #define SPI_FREQUENCY   5000000
 // #define SPI_FREQUENCY  10000000
-// #define SPI_FREQUENCY  20000000
-#define SPI_FREQUENCY  27000000 // Actually sets it to 26.67MHz = 80/3
-// #define SPI_FREQUENCY  40000000 // Maximum to use SPIFFS
-// #define SPI_FREQUENCY  80000000
+//#define SPI_FREQUENCY  20000000
+//#define SPI_FREQUENCY  27000000 // Actually sets it to 26.67MHz = 80/3
+#define SPI_FREQUENCY  40000000 // Maximum to use SPIFFS
+//#define SPI_FREQUENCY  80000000
 
 // Comment out the following #define if "SPI Transactions" do not need to be
 // supported. Tranaction support is required if other SPI devices are connected.
@@ -399,7 +399,8 @@ typedef enum {
   JPEG_DIV_2,
   JPEG_DIV_4,
   JPEG_DIV_8,
-  JPEG_DIV_MAX
+  JPEG_DIV_MAX,
+  JPEG_DIV_FS
 } jpeg_div_t;
 
 // Now fill the structure
@@ -467,6 +468,7 @@ public:
 
   void  init(void), begin(void); // Same - begin included for backwards compatibility
 
+  bool dispActive(void);  // is display thread active
   void  drawPixel(uint32_t x, uint32_t y, uint32_t color);
 
   void  drawChar(int32_t x, int32_t y, unsigned char c, uint32_t color, uint32_t bg, uint8_t font),
@@ -581,19 +583,22 @@ public:
            writeInitData(const uint8_t *data),
            writePixel(uint16_t color),
            writePixels(uint16_t *colors, uint32_t len),
-           drawJpg(const uint8_t *jpg_data, size_t jpg_len, uint16_t x = 0, uint16_t y = 0, uint16_t maxWidth = 0, uint16_t maxHeight = 0, uint16_t offX = 0, uint16_t offY = 0, jpeg_div_t scale = JPEG_DIV_NONE),
-           drawJpgFile(fs::FS &fs, const char *path, uint16_t x = 0, uint16_t y = 0, uint16_t maxWidth = 0, uint16_t maxHeight = 0, uint16_t offX = 0, uint16_t offY = 0, jpeg_div_t scale = JPEG_DIV_NONE),
            drawBmpFile(fs::FS &fs, const char *path, uint16_t x = 0, uint16_t y = 0, uint16_t maxWidth = 0, uint16_t maxHeight = 0, uint16_t offX = 0, uint16_t offY = 0),
            qrcode(const char *string, uint16_t x = 50, uint16_t y = 10, uint8_t width = 220, uint8_t version = 6),
            qrcode(const String &string, uint16_t x = 50, uint16_t y = 10, uint8_t width = 220, uint8_t version = 6);
-
-      
   virtual size_t write(uint8_t);
+
+     int 
+           drawJpg(const uint8_t *jpg_data, size_t jpg_len, uint16_t x = 0, uint16_t y = 0, uint16_t maxWidth = 0, uint16_t maxHeight = 0, uint16_t offX = 0, uint16_t offY = 0, jpeg_div_t scale = JPEG_DIV_NONE, bool centre = false),
+           drawJpgThreaded(const uint8_t *jpg_data, size_t jpg_len, uint16_t x = 0, uint16_t y = 0, uint16_t maxWidth = 0, uint16_t maxHeight = 0, uint16_t offX = 0, uint16_t offY = 0, jpeg_div_t scale = JPEG_DIV_NONE, bool centre = false),
+           drawJpgOpenFile(File *file, uint16_t x = 0, uint16_t y = 0, uint16_t maxWidth = 0, uint16_t maxHeight = 0, uint16_t offX = 0, uint16_t offY = 0, jpeg_div_t scale = JPEG_DIV_NONE, bool centre = false),
+           drawJpgFile(fs::FS &fs, const char *path, uint16_t x = 0, uint16_t y = 0, uint16_t maxWidth = 0, uint16_t maxHeight = 0, uint16_t offX = 0, uint16_t offY = 0, jpeg_div_t scale = JPEG_DIV_NONE, bool centre = false);
 
 
 private:
 
       uint8_t colstart = 0, rowstart = 0; // some ST7735 displays need this changed
+    TaskHandle_t Task1;
 
 protected:
       int32_t cursor_x, cursor_y, win_xe, win_ye, padX;
