@@ -39,7 +39,6 @@ void SPEAKER::begin() {
         &BeepTask3, xPortGetCoreID() == 1 ? 0 : 1);
     xTaskCreatePinnedToCore(beepmix, "BeepMix", 10000, NULL, 1,
         &BeepTask4, xPortGetCoreID() == 1 ? 0 : 1);
-    #endif
     xTaskCreatePinnedToCore(
 	  Task1code, /* Function to implement the task */
 	"Task1", /* Name of the task */
@@ -48,6 +47,7 @@ void SPEAKER::begin() {
 	  0,  /* Priority of the task */
 		&Task1,  /* Task handle. */
       xPortGetCoreID() == 1 ? 0 : 1); /* Core where the task should run */
+    #endif
 }
 
 static void beepthread3(void * parameter) {
@@ -76,7 +76,7 @@ static void beepthread3(void * parameter) {
 			mycount++;
             		dacWrite(SPEAKER_PIN, dac1 + dac2 + dac3);
 		}
-		usleep(delay_interval);
+            	usleep(delay_interval);
 	}
 }
 
@@ -106,7 +106,7 @@ static void beepthread2(void * parameter) {
 			mycount++;
             		dacWrite(SPEAKER_PIN, dac1 + dac2 + dac3);
 		}
-		usleep(delay_interval);
+            	usleep(delay_interval);
 	}
 }
 
@@ -130,13 +130,13 @@ static void beepthread(void * parameter) {
 			next_update = lasttime + delay_interval;
 
 			if(_volume != 11 && mycount % 2 == 0)
-            		    dac1 = 255 / _volume;
-			else if (mycount % 2)
+            		    dac1 = 128 / _volume;
+			else
             		    dac1 = 0;
 			mycount++;
             		dacWrite(SPEAKER_PIN, dac1);
 		}
-		usleep(delay_interval);
+            	usleep(delay_interval);
 	}
 }
 
@@ -216,18 +216,15 @@ void SPEAKER::end() {
 }
 
 void SPEAKER::tone(uint16_t frequency) {
-    setVolume(_volume);
-    _beeptone = frequency;
+	_beeptone = frequency;
 }
 
 void SPEAKER::tone2(uint16_t frequency) {
-    setVolume(_volume);
-    _beeptone2 = frequency;
+	_beeptone2 = frequency;
 }
 
 void SPEAKER::tone3(uint16_t frequency) {
-    setVolume(_volume);
-    _beeptone3 = frequency;
+	_beeptone3 = frequency;
 }
 
 void SPEAKER::tone(uint16_t frequency, uint32_t duration) {
