@@ -130,11 +130,11 @@ static void beepthread(void * parameter) {
 			next_update = lasttime + delay_interval;
 
 			if(_volume != 11 && mycount % 2 == 0)
-            		    dac1 = 32 / _volume;
+            		    dac1 = 255 / _volume;
 			else if (mycount % 2)
             		    dac1 = 0;
 			mycount++;
-            		dacWrite(SPEAKER_PIN, dac1 + dac2 + dac3);
+            		dacWrite(SPEAKER_PIN, dac1);
 		}
 		usleep(delay_interval);
 	}
@@ -216,15 +216,18 @@ void SPEAKER::end() {
 }
 
 void SPEAKER::tone(uint16_t frequency) {
-	_beeptone = frequency;
+    setVolume(_volume);
+    _beeptone = frequency;
 }
 
 void SPEAKER::tone2(uint16_t frequency) {
-	_beeptone2 = frequency;
+    setVolume(_volume);
+    _beeptone2 = frequency;
 }
 
 void SPEAKER::tone3(uint16_t frequency) {
-	_beeptone3 = frequency;
+    setVolume(_volume);
+    _beeptone3 = frequency;
 }
 
 void SPEAKER::tone(uint16_t frequency, uint32_t duration) {
